@@ -416,7 +416,9 @@ vcs_pre/
 ```text
 设计 RTL
 testbench
-可能还包括 include 文件或宏定义文件
+package、interface 等公共定义
+include 文件搜索路径
+编译期宏定义
 ```
 
 例如：
@@ -432,6 +434,127 @@ testbench
 前仿真要读 testbench
 DC 综合不能读 testbench
 ```
+
+filelist 不只是文件名清单，还承担编译顺序和预处理配置管理。一般按照下面顺序组织：
+
+```text
+package、宏和interface等公共定义
+→ 底层RTL模块
+→ RTL顶层模块
+→ testbench
+```
+
+如果后面的文件使用了前面尚未编译的 package 或 interface，VCS 可能报告类型或定义不存在。因此，多文件工程应明确管理顺序，不要依赖目录遍历的偶然结果。
+
+#### 编译前预处理：宏定义与include目录
+
+VCS正式解析 Verilog/SystemVerilog 语法前，会先执行预处理。预处理主要处理：
+
+```text
+`include     把头文件内容插入当前位置
+`define      定义宏
+`ifdef       根据宏是否存在决定某段代码是否参与编译
+```
+
+假设目录为：
+
+```text
+project/
+├── rtl/
+│   ├── include/
+│   │   └── des_config.vh
+│   └── des_round.sv
+└── vcs_pre/
+    ├── tb/
+    │   └── des_round_tb.sv
+    └── file_list.f
+```
+
+头文件 `des_config.vh` 定义公共编译期常量：
+
+```verilog
+`define HALF_WIDTH      32
+`define ROUND_KEY_WIDTH 48
+```
+
+RTL 通过 `` `include`` 使用该文件：
+
+```systemverilog
+`include "des_config.vh"
+
+module des_round (
+    input  logic [`HALF_WIDTH-1:0]      data_in,
+    input  logic [`ROUND_KEY_WIDTH-1:0] round_key,
+    output logic [`HALF_WIDTH-1:0]      data_out
+);
+
+    always_comb begin
+        data_out = data_in ^ round_key[31:0];
+    end
+
+`ifdef ENABLE_TRACE
+    always_comb begin
+        $display("data_in=%h data_out=%h", data_in, data_out);
+    end
+`endif
+
+endmodule
+```
+
+对应 `file_list.f`：
+
+```text
++incdir+../rtl/include
++define+ENABLE_TRACE
+
+../rtl/des_round.sv
+./tb/des_round_tb.sv
+```
+
+这里发生了两件不同的事。
+
+```text
++incdir+../rtl/include
+    给预处理器增加头文件搜索路径
+    当代码遇到 `include "des_config.vh" 时，到该目录寻找文件
+
++define+ENABLE_TRACE
+    从编译命令定义ENABLE_TRACE宏
+    因此 `ifdef ENABLE_TRACE 中的调试代码参与编译
+```
+
+如果删除 `+define+ENABLE_TRACE`，`` `ifdef ENABLE_TRACE`` 中的调试 `$display` 不会进入本次编译，但主体功能逻辑不受影响。
+
+需要注意：
+
+```text
++incdir+只增加搜索路径，不会自动编译目录中的所有文件
+普通RTL、package和interface仍应在filelist中明确列出
+.vh/.svh通常作为头文件被`include，不应重复当作独立模块随意编译
+```
+
+宏本质上是语法解析前的文本替换，没有类型和模块作用域。例如：
+
+```verilog
+logic [`HALF_WIDTH-1:0] data;
+```
+
+预处理后近似变为：
+
+```verilog
+logic [31:0] data;
+```
+
+因此宏更适合：
+
+```text
+条件编译
+全局编译开关
+仿真调试代码开关
+跨文件公共文本常量
+```
+
+模块位宽、流水级数等具有设计语义的配置，通常优先使用有作用域的 `parameter`。不要为了方便把所有设计参数都写成全局宏，也要避免因 `` `ifdef`` 造成仿真代码与综合代码行为不一致。
 
 ### 4.4 Makefile 的作用
 
