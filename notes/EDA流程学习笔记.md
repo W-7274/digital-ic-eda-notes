@@ -2771,6 +2771,36 @@ MW_REFERENCE_LIB_DIRS
     标准单元和 IO 的只读物理视图
 ```
 
+初始化脚本可能在网表导入失败后重新执行。此时 Milkyway 库目录已经创建，但脚本再次无条件执行 `create_mw_lib` 会报：
+
+```text
+Library '<design>_LIB' already exists
+No Milkyway library is open
+Current design is not defined
+```
+
+第一条是根因，后两类都是“创建失败后没有打开设计库”的连锁错误。可重复执行的初始化逻辑应当是：
+
+```tcl
+if {[file isdirectory $MW_DESIGN_LIBRARY]} {
+    open_mw_lib $MW_DESIGN_LIBRARY
+} else {
+    create_mw_lib $MW_DESIGN_LIBRARY -open \
+        -tech $TECH_FILE \
+        -mw_reference_library $MW_REFERENCE_LIB_DIRS
+}
+```
+
+这里的“存在则打开”适用于首次初始化中断后继续执行。若已有库包含完整 placement、CTS 或 routing 结果，而目标是重新开始一次全新实现，则应先明确备份或清理策略，不能无提示地覆盖已有 CEL。
+
+LCRM 参考脚本可能把 `sh_continue_on_error` 设置为 `true`。如果希望初始化阶段首错即停，应在所有 setup 脚本 source 完成后再设置：
+
+```tcl
+set_app_var sh_continue_on_error false
+```
+
+设置过早会被后续 LCRM 配置覆盖。
+
 #### 导入已经映射的门级网表
 
 ```tcl
