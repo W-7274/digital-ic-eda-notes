@@ -1353,7 +1353,8 @@ dc/
 ├── syn/
 ├── work/
 ├── alib/
-├── mw/
+├── log/
+├── mw/             # 仅 topographical 模式需要
 ├── out/
 └── rep/
 ```
@@ -1365,7 +1366,8 @@ scr/   放脚本
 syn/   运行 dc_shell 的工作目录
 work/  放 analyze 后的 WORK 设计工作库文件
 alib/  放 DC 对标准单元库分析后的 ALIB 缓存
-mw/    放当前设计的 Milkyway design library
+log/   放完整会话、命令记录和关键阶段日志
+mw/    放 topographical 模式下当前设计的 Milkyway design library
 out/   放给 ICC/PT/后仿使用的正式输出
 rep/   放 timing/area/power 等报告
 ```
@@ -1678,31 +1680,43 @@ DC topo
 
 SDC = Synopsys Design Constraints。它不是附属文件，而是综合和 STA 的核心输入。
 
-书本上的静态时序分析本质是：
+从静态时序分析角度看，工具最终要比较：
 
 ```text
 数据到达时间 <= 数据要求时间
 ```
 
-DC 要完成这个判断，至少需要知道：
+但 RTL 只描述芯片内部逻辑，并没有说明时钟周期、外部接口时序和实际电气负载。SDC 的作用就是补充这些设计环境，使 DC 知道“多快才算满足要求”以及“映射后的电路还必须满足哪些电气规则”。
+
+因此，SDC 可以按以下逻辑分类：
+
+| 类别 | 要回答的问题 | 常用命令 |
+| --- | --- | --- |
+| 时钟模型 | 时钟从哪里来、周期是多少、不同种类的时钟是什么关系 | `create_clock`、`create_generated_clock`、`set_clock_latency`、`set_clock_uncertainty`、`set_clock_transition` |
+| 接口时序环境 | 外部电路什么时候提供输入，输出需要为外部保留多少时间 | `set_input_delay`、`set_output_delay` |
+| 接口电气环境 | 输入端由谁驱动，输出端连接多大负载 | `set_driving_cell`、`set_input_transition`、`set_load` |
+| 路径例外 | 哪些路径不能按默认单周期同步路径分析 | `set_false_path`、`set_multicycle_path`、`set_max_delay`、`set_min_delay`、`set_clock_groups` |
+| 设计规则 | 综合后的网络在转换时间、扇出和电容方面必须满足什么要求 | `set_max_transition`、`set_max_fanout`、`set_max_capacitance` |
+
+这五类约束之间的关系是：
 
 ```text
-时钟周期是多少？
-时钟有多少不确定性？
-输入信号什么时候到达模块？
-输出信号要给外部留下多少时间？
-输入由多强的外部单元驱动？
-输出后面接了多大负载？
-哪些路径不应该按普通数据路径检查？
+时钟约束建立分析基准
+→ IO 延迟描述芯片外部的时序预算
+→ 驱动与负载描述接口电气环境
+→ 路径例外修正默认的时序关系
+→ 设计规则限制综合后网表的电气质量
 ```
 
-#### 时钟约束
+#### 第一类：建立时钟模型
 
-最核心的是：
+##### 主时钟
+
+`create_clock` 在设计端口或内部 pin 上建立时钟对象，是同步时序分析的基准：
 
 ```tcl
 set per 20.00
-create_clock -period $per [get_ports clk]
+set CLOCK1 [create_clock -name core_clk -period $per [get_ports clk]]
 ```
 
 如果目标是 200MHz：
@@ -1718,9 +1732,22 @@ set per 5.00
 create_clock -period $per [get_ports clk]
 ```
 
-如果希望 DC 阶段给后端留余量，也可以把 DC 目标设得更紧，比如后端目标 200MHz，DC 先按 220MHz 或 240MHz 综合。
+如果希望 DC 阶段给后端留余量，可以把综合周期设置得比最终目标稍紧，但必须明确这部分差值用于预留后端布线、时钟树和寄生参数带来的损失，不能无依据地追求更高频率。
 
-#### 时钟非理想因素
+##### 派生时钟
+
+PLL 输出、分频器输出或门控后形成的新时钟，应根据真实结构使用 `create_generated_clock` 描述它与源时钟的关系。例如二分频时钟：
+
+```tcl
+create_generated_clock -name clk_div2 \
+    -source [get_ports clk] \
+    -divide_by 2 \
+    [get_pins u_div/clk_out]
+```
+
+派生时钟不是简单地再写一个无关的 `create_clock`。保留源时钟关系后，工具才能正确分析源时钟域与派生时钟域之间的路径。
+
+##### 时钟非理想因素
 
 教学脚本常见：
 
@@ -1731,7 +1758,7 @@ set_clock_uncertainty -setup [expr {$per*0.05+0.04+0.03+0.03}] $CLOCK1
 set_clock_transition -max [expr {$per*0.08}] $CLOCK1
 ```
 
-含义：
+这些命令分别描述：
 
 ```text
 set_clock_latency -source
@@ -1750,31 +1777,9 @@ set_clock_transition
 这些值应该来自实际时钟预算、工艺建议、后端 CTS 目标或工程经验。
 教学模板按比例设置可以帮助理解命令，但不代表真实工程约束一定合理。
 
-#### 路径分组
+#### 第二类：描述接口时序环境
 
-```tcl
-group_path -name INPUT -from [all_inputs]
-group_path -name OUTPUT -to [all_outputs]
-group_path -name INOUT -from [all_inputs] -to [all_outputs]
-```
-
-它们用于让报告和优化更清晰：
-
-```text
-INPUT
-    从输入端口出发的路径，例如 input -> register。
-
-OUTPUT
-    到输出端口结束的路径，例如 register -> output。
-
-INOUT
-    输入端口直接经过组合逻辑到输出端口的路径，即 input -> output。
-    这里的 INOUT 不是 Verilog 的 inout 端口。
-```
-
-#### 输入延迟和输出延迟
-
-输入延迟：
+##### 输入延迟
 
 ```tcl
 set all_in_exp_clk [remove_from_collection [all_inputs] [get_ports "clk rst"]]
@@ -1788,7 +1793,16 @@ set_input_delay 描述输入信号“什么时候到达模块输入端口”。
 它表示外部电路已经消耗的时间。
 ```
 
-输出延迟：
+对于 input-to-register 路径，可以近似理解为：
+
+```text
+input delay
++ 芯片内部输入端口到寄存器 D 端的组合逻辑延迟
++ 寄存器 setup time
+<= 时钟周期 - uncertainty
+```
+
+##### 输出延迟
 
 ```tcl
 set_output_delay -max [expr {$per*0.4}] -clock $CLOCK1 [all_outputs]
@@ -1800,7 +1814,7 @@ set_output_delay -max [expr {$per*0.4}] -clock $CLOCK1 [all_outputs]
 set_output_delay 描述输出信号要给外部接收电路预留多少时间。
 ```
 
-注意要排除 `clk`：
+输入输出延迟描述的是芯片与上下游模块之间的时序预算，而不是芯片内部组合逻辑本身的延迟。设置数据输入约束时必须排除时钟端口：
 
 ```text
 clk 是时钟端口，不是普通数据输入
@@ -1814,7 +1828,48 @@ rst/rst_n 通常是异步控制信号
 不应简单当作普通同步数据输入来约束
 ```
 
-#### 复位路径例外
+#### 第三类：描述接口电气环境
+
+接口时序约束说明“数据什么时候到”，接口电气约束说明“信号边沿质量如何”。常见写法：
+
+```tcl
+set_driving_cell -lib_cell INHDV1 -pin ZN \
+    -library scc018ug_hd_rvt_ss_v1p62_125c_basic \
+    $all_in_exp_clk
+
+set_load 1 [all_outputs]
+```
+
+三类常见命令的区别：
+
+```text
+set_driving_cell
+    使用库中的实际 cell 模拟上游驱动能力及输出波形。
+
+set_input_transition
+    已知输入 slew 时，直接指定输入转换时间；通常与 set_driving_cell 二选一。
+
+set_load
+    描述输出端连接的等效电容负载。
+```
+
+输入 slew 会影响第一级标准单元的 delay 和输出 slew；输出负载会影响末级单元的 delay、transition 和所需驱动强度。因此，它们会影响单元选择、缓冲器插入、面积、功耗和时序结果。
+
+需要明确：
+
+```text
+set_input_delay 与 set_driving_cell 不是重复约束
+set_output_delay 与 set_load 也不是重复约束
+
+前者描述时序预算
+后者描述电气环境
+```
+
+#### 第四类：声明路径例外
+
+默认情况下，工具会按照时钟关系对可达路径执行 setup/hold 分析。只有当真实功能不符合默认单周期模型时，才能使用路径例外。
+
+##### 异步复位例外
 
 例如：
 
@@ -1831,54 +1886,104 @@ set_false_path -from [get_ports rst]
 这不是说复位不重要，而是复位通常有自己的时序要求，例如 recovery/removal。
 课程流程里常先把异步 reset 从普通数据路径中排除，避免 DC 把 reset 路径当作普通输入数据路径优化。
 
-#### 输入驱动和输出负载
+##### 其他常见路径例外
 
 ```tcl
-set_driving_cell -lib_cell INHDV1 -pin ZN -library scc018ug_hd_rvt_ss_v1p62_125c_basic \
-     $all_in_exp_clk
-set_load 1 [all_outputs]
+set_false_path -from <start_objects> -to <end_objects>
+set_multicycle_path 2 -setup -from <start_objects> -to <end_objects>
+set_max_delay <value> -from <start_objects> -to <end_objects>
+set_min_delay <value> -from <start_objects> -to <end_objects>
+set_clock_groups -asynchronous -group <clock_group_a> -group <clock_group_b>
 ```
-
-`set_input_delay` 描述“输入什么时候到”，而 `set_driving_cell` 描述“输入由谁驱动、边沿多快”。
-
-两者区别：
 
 ```text
-set_input_delay
-    时序预算约束，影响 input port 到寄存器路径剩余可用时间。
+set_false_path
+    指定完全不进行普通时序检查的路径。
 
-set_driving_cell
-    电气环境约束，影响输入 slew，进而影响第一级门和后续逻辑的 delay 估算。
+set_multicycle_path
+    指定功能上允许跨越多个时钟周期的路径；通常还要配套检查 hold 设置。
 
-set_load
-    电气环境约束，描述输出端后面接了多大电容负载。
+set_max_delay / set_min_delay
+    直接覆盖指定路径允许的最大或最小延迟要求。
+
+set_clock_groups -asynchronous
+    声明异步时钟组之间不存在可直接分析的固定相位关系。
 ```
 
-对 input -> register 路径，可以近似理解为：
+路径例外必须来自架构、协议和 CDC 设计依据，不能为了清除 timing violation 而添加。错误的例外比可见的时序违例更危险，因为它会让真实路径退出检查。
+
+#### 第五类：限制电气设计规则
+
+这类约束不直接规定某条路径必须在几个周期内完成，而是限制综合后网络的电气质量：
+
+```tcl
+set_max_transition <value> [current_design]
+set_max_fanout <value> [current_design]
+set_max_capacitance <value> [current_design]
+```
 
 ```text
-input_delay
-+ 输入端口到寄存器 D 端的内部组合逻辑延迟
-+ setup time
-<= clock period - uncertainty
+set_max_transition
+    限制信号边沿转换时间。边沿过慢会增加延迟、短路功耗和噪声风险。
+
+set_max_fanout
+    限制一个驱动端直接连接的负载数量。
+
+set_max_capacitance
+    限制驱动端看到的总电容负载。
 ```
 
-`set_driving_cell` 会影响“输入端口到寄存器 D 端的内部组合逻辑延迟”，尤其是第一级 cell 的 delay。
+DC 为满足这些规则，可能更换更强的驱动单元、复制逻辑或插入 buffer。具体限制通常优先继承标准单元库中的 design rule；只有存在明确工程要求时，才在 SDC 中施加更严格的值。
+
+`set_load` 和 `set_driving_cell` 描述端口外部环境，不属于这一类设计规则限制，虽然它们同样会影响 transition、capacitance 和综合优化。
+
+#### 分析与优化路径分组
+
+`group_path` 用于组织报告和综合优化优先级，但它通常不改变路径原本的 required time，因此应与时序约束和路径例外区分开：
+
+```tcl
+group_path -name INPUT  -from [all_inputs]
+group_path -name OUTPUT -to [all_outputs]
+group_path -name INOUT  -from [all_inputs] -to [all_outputs]
+```
+
+```text
+INPUT     input -> register 等从输入端口出发的路径
+OUTPUT    register -> output 等到输出端口结束的路径
+INOUT     input -> output 的纯组合路径，不是 Verilog 的 inout 端口
+```
 
 #### SDC 书写检查表
 
-写 SDC 时建议按这个顺序检查：
+SDC 推荐按下面顺序书写和检查：
 
 ```text
-1. create_clock 是否覆盖所有真实时钟？
-2. clk 是否从普通 input delay 中排除？
-3. rst/rst_n 是否按复位信号处理，而不是普通数据输入？
-4. input_delay/output_delay 是否符合上下游接口预算？
-5. clock_uncertainty/transition 是否有合理来源？
-6. set_driving_cell 和 set_load 是否能反映边界电气环境？
-7. 是否存在 input -> output 组合路径，需要单独关注？
-8. check_timing 是否还有 unconstrained path？
+1. 建立所有主时钟和派生时钟。
+2. 设置有依据的 latency、uncertainty 和 transition。
+3. 根据上下游接口预算设置 input/output delay。
+4. 根据外部电路设置 driving cell、input transition 和 output load。
+5. 根据真实功能声明 false path、multicycle path 和异步时钟关系。
+6. 根据工艺库和工程要求设置电气设计规则。
+7. 如有需要，再使用 group_path 整理报告和优化组。
+8. 执行 check_timing、report_clock 和 report_constraint 检查约束是否生效。
 ```
+
+重点检查：
+
+```text
+create_clock 是否覆盖所有真实时钟？
+generated clock 是否保留了与源时钟的关系？
+clk 是否从普通 input delay 中排除？
+rst/rst_n 是否按复位类型正确处理？
+IO delay 是否符合上下游接口预算？
+时钟非理想参数是否有合理来源？
+驱动与负载是否反映边界电气环境？
+路径例外是否有明确功能依据、对象是否匹配？
+check_timing 是否仍报告 unconstrained path？
+report_constraint 是否存在未满足的时序或设计规则？
+```
+
+SDC 语法能够执行，不代表约束一定正确。完整流程应当是“写约束、检查对象、查看覆盖、分析报告、修正约束”，而不是通过增加 false path 隐藏违例。
 
 ### 5.9 dc_run.tcl 的执行逻辑
 
@@ -1905,30 +2010,25 @@ write outputs
 
 | 脚本阶段 | 输入状态 | 核心变化 | 典型检查/产物 |
 |---|---|---|---|
-| 工作副本 | `data_setup` | 复制出可修改的`floorplan` CEL | 保留干净初始化起点 |
-| Floorplan | 无芯片边界 | 建立core、row、利用率和IO边界 | `block_shape` CEL |
-| 物理准备 | 已有row | 限制布线层，加入end-cap和tap cell | 工艺基础结构完整 |
-| Power Planning | 无供电几何 | 建立ring、strap和标准单元电源轨 | `verify_pg_nets`、`ffinish` CEL |
-| Placement | 单元无坐标 | 放置、合法化并优化标准单元 | 拥塞/时序报告、`placemented` CEL |
-| CTS | 理想时钟 | 插入时钟缓冲器并建立真实时钟树 | clock tree、latency、skew报告 |
-| Post-CTS | 时钟树已建立 | 根据真实时钟到达时间修复hold等问题 | 更新后的时序状态 |
-| Routing | 只有连接关系 | 生成时钟和信号的金属线、via | 布线后时序/功耗/约束报告 |
-| Post-Route | 已有真实走线 | 修复DRC和hold，检查开路、antenna、LVS | route、PG、LVS检查结果 |
-| Chip Finish | 标准单元间有空隙 | 插入filler并保存最终CEL | `finish`/`allfinish` CEL |
-| Handoff | 最终物理数据库 | 导出GDS、网表、SDC、SDF和SPEF | 交给PT、后仿和版图交付 |
+| 清理上下文 | DC 内存可能残留旧设计 | 清除上一次运行状态 | 干净的综合上下文 |
+| Analyze | RTL 文本文件 | 完成 HDL 语法分析并写入 WORK | `analyze.log` 或完整会话日志 |
+| Elaborate | WORK 中的设计模板 | 展开 parameter、generate 和设计层次 | 顶层 DC 设计对象 |
+| Link/Check | 已展开但引用尚待解析 | 关联子模块、逻辑库和 DesignWare | `check_design` 结果 |
+| 约束加载 | 已建立逻辑设计 | 加入时钟、IO、例外和电气环境 | `check_timing` 结果 |
+| Compile | 未映射的内部逻辑表示 | 优化逻辑并映射到 target library | 标准单元网表 |
+| Report | 已映射设计 | 分析时序、面积、功耗和约束 | `timing/area/power/constraint` 报告 |
+| Handoff | 已检查的映射结果 | 写出网表、DDC、SDC 等 | 交给 ICC/PT/后仿的正式文件 |
 
-脚本之所以较长，是因为它不只是连续调用几个优化命令。每个阶段都应形成闭环：
+DC 主流程的闭环是：
 
 ```text
-继承上一阶段检查点
-→ 设置本阶段规则
-→ 执行物理变换
-→ 报告时序/拥塞/DRC/PG等结果
-→ 保存新的Milkyway CEL
-→ 下一阶段继续
+读入并建立设计
+→ 检查结构和约束是否完整
+→ 执行综合与工艺映射
+→ 确认没有未映射逻辑
+→ 分析报告
+→ 只在成功后写出正式产物
 ```
-
-阶段检查点的价值是可回退、可比较、可重复。例如floorplan参数不合理时，可以重新从`data_setup`复制，而不必重新导入网表和SDC。
 
 #### remove_design
 
@@ -2135,6 +2235,131 @@ write_sdf ../out/$DESIGN_NAME.mapped.sdf
 
 这些文件是 DC 交给后续流程的结果。
 
+### 5.10 DC 日志体系与故障定位
+
+报告和日志用途不同：
+
+```text
+日志 log
+    记录工具执行过程、Warning、Error、命令上下文和异常退出信息。
+    主要回答“流程在哪一步失败，第一条错误是什么？”
+
+报告 report
+    描述成功建立或综合后的设计质量。
+    主要回答“时序、面积、功耗和约束结果怎么样？”
+```
+
+一套够用且不过度拆分的 DC 日志可以保留：
+
+```text
+dc_console.log    几乎完整的控制台输出，是定位未知错误的首选
+command.log       初始变量和执行命令，用于还原工具实际运行内容
+check_design.log  未连接、多驱动、组合环和 unresolved reference
+check_timing.log  时钟、未约束路径和 IO 约束完整性
+compile.log       compile_ultra 的优化、映射、库分析和异常信息
+```
+
+对应的核心报告保留：
+
+```text
+constraint.rpt    setup、transition、capacitance 等约束违例
+timing.rpt        关键路径、arrival、required 和 slack
+area.rpt          标准单元数量和面积
+power.rpt         动态功耗、静态功耗估计
+qor.rpt           时序、面积和设计规则的摘要
+```
+
+`.synopsys_dc.setup` 可以集中设置完整会话和命令日志：
+
+```tcl
+file mkdir ../log
+set_app_var sh_output_log_file  ../log/dc_console.log
+set_app_var sh_command_log_file ../log/command.log
+```
+
+关键阶段使用 `redirect -tee`：
+
+```tcl
+redirect -tee -file ../log/check_design.log {
+    check_design
+}
+
+redirect -tee -file ../log/check_timing.log {
+    check_timing
+    report_clock
+}
+
+redirect -tee -file ../log/compile.log {
+    compile_ultra
+}
+```
+
+`-tee` 表示内容既写入文件，也继续显示在终端。完整会话日志负责保留上下文，阶段日志负责缩小检查范围，不需要为 `analyze`、`elaborate` 和每个 write 命令都创建独立文件。
+
+#### 日志阅读顺序
+
+定位失败时不要从最后一条错误倒推，应按下面顺序：
+
+```text
+1. 在 dc_console.log 中搜索第一条 Error、Fatal 或异常退出信息。
+2. 根据发生阶段打开 check_design、check_timing 或 compile 日志。
+3. 修复第一条根因后重新运行，不先处理后续连锁错误。
+4. 综合成功后再阅读 timing、area、power 和 constraint 报告。
+```
+
+例如 ICC 报告 `SEQGEN is not defined` 时，问题不一定在 ICC。应先回到 DC 检查：
+
+```text
+mapped.v 是否仍含 **SEQGEN**、GTECH_*、ADD_UNS_OP 等内部表示？
+area report 的 Library(s) Used 是否只有 gtech？
+标准单元面积是否为 0？
+DC 是否提示 This design contains unmapped logic？
+```
+
+这些现象说明 `compile_ultra` 没有完成工艺映射。此时名字虽然是 `mapped.v`，内容却不是可交给 ICC 的标准单元网表。
+
+脚本应关闭“出错后继续执行”，并在综合后验证映射状态：
+
+```tcl
+set_app_var sh_continue_on_error false
+
+compile_ultra
+
+if {![get_attribute [current_design] is_mapped]} {
+    error "综合后仍包含未映射逻辑，禁止写出正式网表"
+}
+```
+
+这两层检查分别解决：
+
+```text
+sh_continue_on_error=false
+    命令失败后立即停止，不让错误继续扩散。
+
+is_mapped
+    即使命令返回，也确认当前设计确实已经映射到 target library。
+```
+
+#### 旧版工具与新系统的动态库冲突
+
+旧版 Synopsys 工具可能自带旧 `libz.so.1`，而当前 Linux 的 `libpng16` 需要更新的 `ZLIB_1.2.9`，典型错误为：
+
+```text
+libz.so.1: version `ZLIB_1.2.9' not found
+Abnormal exit of child process
+```
+
+这不是 RTL、SDC 或 `.db` 内容错误，而是工具子进程的动态库版本冲突。可以只对相应工具局部预加载系统 zlib：
+
+```bash
+dc_shell() {
+    LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libz.so.1 \
+        bash "$DC_HOME/bin/dc_shell" "$@"
+}
+```
+
+不要全局 `export LD_PRELOAD`，否则可能影响其他程序。ICC 出现相同错误时，可以对 `icc_shell` 使用相同的局部包装方式。
+
 ## 6. DC 输出文件详解
 
 ### 6.1 mapped.v
@@ -2314,6 +2539,19 @@ out/        正式输出给 PT/后仿/版图检查
 rpts/       timing/constraint/power 报告
 rep/        PG/LVS 等检查报告
 ```
+
+ICC 参考流程通常已经生成日志，只是名称不一定带 `.log`：
+
+```text
+work/icc_output.txt    完整控制台日志
+work/command.log       工具执行命令记录
+rpts/*Timing           布线后时序报告
+rpts/*Constraint       约束违例报告
+rpts/*Power            功耗报告
+work/cpd_*/output_log  并行布局优化子进程日志，通常只在子进程异常时查看
+```
+
+阅读顺序与 DC 相同：先从 `icc_output.txt` 找第一条错误，再根据所处的 init、placement、CTS 或 routing 阶段检查对应报告，不要先处理后续的 `Current design is not defined` 等连锁错误。
 
 ### 7.4 ICC common_setup.tcl
 

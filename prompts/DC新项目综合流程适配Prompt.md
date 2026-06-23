@@ -70,6 +70,8 @@ mapped.v
 mapped.ddc
 mapped.sdc
 timing / area / power / constraint 报告
+完整控制台日志和命令日志
+check_design / check_timing / compile 关键阶段日志
 ```
 
 只有明确需要时才额外输出 unmapped DDC、SDF、SVF 或其他报告。
@@ -90,6 +92,7 @@ project/
     │   └── .synopsys_dc.setup
     ├── work/
     ├── alib/
+    ├── log/
     ├── mw/                 # 仅 Topo 模式需要
     ├── out/
     └── rep/
@@ -103,6 +106,7 @@ scr/    配置、约束和主流程脚本
 syn/    dc_shell 启动目录
 work/   analyze 产生的 WORK 设计库
 alib/   DC 分析 .db 后产生的 ALIB 缓存
+log/    完整会话、命令记录和关键阶段日志
 mw/     Topo 模式的 Milkyway design library
 out/    综合结果
 rep/    综合报告
@@ -216,32 +220,69 @@ clock source latency 与 network latency 含义不同
 
 ### 5. dc_run.tcl：执行线性综合流程
 
-主流程保持顺序清晰：
+主流程保持顺序清晰，并在关键检查和综合阶段保存日志：
 
 ```tcl
+set_app_var sh_continue_on_error false
+
+set LOG_DIR ../log
+set REP_DIR ../rep
+set OUT_DIR ../out
+file mkdir $LOG_DIR
+file mkdir $REP_DIR
+file mkdir $OUT_DIR
+
 remove_design -all
 analyze -format <verilog_or_sverilog> -library WORK $RTL_SOURCE_FILES
 elaborate $DESIGN_NAME
 current_design $DESIGN_NAME
 link
-check_design
+
+redirect -tee -file $LOG_DIR/check_design.log {
+    check_design
+}
 
 source ../scr/sdc.tcl
-check_timing
 
-compile_ultra
+redirect -tee -file $LOG_DIR/check_timing.log {
+    check_timing
+    report_clock
+}
 
-report_constraint -all_violators > ../rep/${DESIGN_NAME}_constraint.rpt
-report_timing                  > ../rep/${DESIGN_NAME}_timing.rpt
-report_area                    > ../rep/${DESIGN_NAME}_area.rpt
-report_power                   > ../rep/${DESIGN_NAME}_power.rpt
+redirect -tee -file $LOG_DIR/compile.log {
+    compile_ultra
+}
+
+if {![get_attribute [current_design] is_mapped]} {
+    error "综合后仍包含未映射逻辑，禁止写出正式网表"
+}
+
+redirect -file $REP_DIR/${DESIGN_NAME}_constraint.rpt {
+    report_constraint -all_violators
+}
+redirect -file $REP_DIR/${DESIGN_NAME}_timing.rpt { report_timing }
+redirect -file $REP_DIR/${DESIGN_NAME}_area.rpt   { report_area }
+redirect -file $REP_DIR/${DESIGN_NAME}_power.rpt  { report_power }
+redirect -file $REP_DIR/${DESIGN_NAME}_qor.rpt    { report_qor }
 
 write -hierarchy -format ddc \
-    -output ../out/${DESIGN_NAME}.mapped.ddc
+    -output $OUT_DIR/${DESIGN_NAME}.mapped.ddc
 write -hierarchy -format verilog \
-    -output ../out/${DESIGN_NAME}.mapped.v
-write_sdc ../out/${DESIGN_NAME}.mapped.sdc
+    -output $OUT_DIR/${DESIGN_NAME}.mapped.v
+write_sdc $OUT_DIR/${DESIGN_NAME}.mapped.sdc
 ```
+
+日志只保留最关键的三份阶段文件：
+
+```text
+check_design.log    设计结构、连接和引用问题
+check_timing.log    时钟及约束完整性问题
+compile.log         优化、库分析和工艺映射问题
+```
+
+不要为 analyze、elaborate 和每个 write 命令机械生成独立日志；这些过程统一保留在完整控制台日志中。
+
+必须设置 `sh_continue_on_error=false`，并在 `compile_ultra` 后检查当前设计的 `is_mapped` 属性。综合失败或仍有未映射逻辑时必须停止，不能继续生成名称为 `mapped.v` 的无效网表。
 
 只有明确要求时才加入：
 
@@ -267,15 +308,25 @@ history keep 200
 
 file mkdir ../work
 file mkdir ../alib
+file mkdir ../log
 file mkdir ../out
 file mkdir ../rep
 
+set_app_var sh_output_log_file  ../log/dc_console.log
+set_app_var sh_command_log_file ../log/command.log
 set_app_var alib_library_analysis_path ../alib
 define_design_lib WORK -path ../work
 
 source ../scr/lib_list.tcl
 source ../scr/common_setup.tcl
 source ../scr/dc_setup.tcl
+```
+
+日志含义：
+
+```text
+dc_console.log    几乎完整的控制台输出，用于寻找第一条 Error/Fatal
+command.log       初始变量和实际执行命令，用于复现工具状态
 ```
 
 只保留真正有用的交互 alias。配置加载只能选择一个入口，不要再让 `dc_run.tcl` 编写相同的 fallback source 逻辑。
@@ -289,6 +340,7 @@ source ../scr/dc_setup.tcl
 3. 简要解释每个脚本的输入、职责和与下一阶段的衔接。
 4. 给出从 `dc/syn/` 启动和执行综合的命令。
 5. 列出预期输出，并说明如何从日志判断流程是否成功。
+6. 说明日志和报告的区别，并给出故障定位时的阅读顺序。
 
 脚本要求：
 
@@ -299,6 +351,7 @@ source ../scr/dc_setup.tcl
 不生成当前设计用不到的配置
 不同时保留多套互斥实现
 不通过复杂防御代码掩盖配置错误
+发现错误时先定位完整日志中的第一条根因，不追逐后续连锁报错
 ```
 
 解释内容与脚本分开。先保证脚本短、直观、可运行，再说明关键命令的作用。
