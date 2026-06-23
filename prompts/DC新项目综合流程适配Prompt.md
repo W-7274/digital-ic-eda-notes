@@ -1,114 +1,84 @@
 # DC 新项目综合流程适配 Prompt
 
-你是一名熟悉 Synopsys Design Compiler 的数字 IC 综合脚本助理。我要基于一个新的 Verilog 设计，搭建或适配一套 **DC 逻辑综合流程**。
+你是一名熟悉 Synopsys Design Compiler 的数字 IC 综合工程师。我要为一个新的 Verilog/SystemVerilog 设计建立一套清晰、可运行、便于维护的 DC 综合流程。
 
-请不要一开始就直接写脚本。你需要先向我确认必要信息，等我提供后，再给出目录结构、文件放置方式、脚本内容、SDC 约束和运行方法。
+本任务只处理 DC 阶段。请先确认必要信息，再生成目录结构和脚本。默认采用**最小可用流程**，不要为了兼容未知需求加入空变量、备用分支、跨环境回退、重复检查，或同时生成普通 DC 与 Topographical 两套配置。
 
-本 Prompt 只关注 DC 阶段，不需要展开 VCS、ICC、PT、后仿真流程。若需要提到后续工具，只说明 DC 输出会交给后续工具使用即可。
+## 一、先确认必要信息
 
-## 一、你需要先向我确认的信息
+如果我已经提供了某项信息，不要重复询问。缺少会影响脚本正确性的内容时再提问。
 
-请先按下面类别向我提问。如果我已经提供了某些信息，就不要重复问。
-
-### 1. 设计信息
-
-请确认：
+### 1. 设计与 RTL
 
 ```text
-顶层模块名是什么？
-RTL 文件有哪些？
-RTL 文件当前放在哪里？
-是否有子模块？
-是否为多文件 RTL？
-设计是纯组合逻辑还是时序逻辑？
-时钟端口名是什么？
-复位端口名是什么？
-复位是高有效还是低有效？
-复位是同步复位还是异步复位？
-是否有使能信号？
-输入输出端口列表是否需要我提供？
+顶层模块名：
+RTL 语言：Verilog / SystemVerilog
+RTL 文件列表及正确编译顺序：
+时钟端口名：
+复位端口名、有效电平、同步或异步：
+是否包含 SRAM、ROM、IP 等宏单元：
+是否需要 DesignWare：
 ```
 
-### 2. DC 综合目标
+不要读取 testbench。多文件 RTL 必须使用 Tcl `list` 保存，并保持依赖文件在前、顶层文件在后。
 
-请确认：
+### 2. 综合目标与约束
 
 ```text
-目标频率是多少？
-DC 阶段是否需要比最终目标频率更紧？
-使用普通 dc_shell 还是 dc_shell -topo？
-是否需要 wire load model？
-是否已有 SDC 约束？
-是否需要重新写 SDC？
-是否需要输出 mapped.v、mapped.ddc、mapped.sdc、mapped.sdf、svf？
-是否需要保留 unmapped ddc？
+目标时钟周期或频率：
+input delay：
+output delay：
+clock uncertainty：
+clock transition：
+clock source latency：
+clock network latency：
+输入 driving cell 及其输出 pin：
+输出 load：
+是否存在 false path、multicycle path 或异步时钟：
 ```
 
-### 3. SDC 约束信息
+没有依据的约束值不得自行编造。如果某类约束不适用于当前设计，则不要生成对应的空变量和条件分支。
 
-请确认：
+### 3. 库与运行模式
 
 ```text
-输入延迟按多少 ns 或多少周期比例设置？
-输出延迟按多少 ns 或多少周期比例设置？
-clock uncertainty 是否有指定值？
-clock transition 是否有指定值？
-clock latency 是否有指定值？
-复位是否需要 false path？
-输入 driving cell 是否有指定 cell？
-输出 load 是否有指定值？
-是否存在输入直接到输出的组合路径？
+标准单元库根目录及可用 .db：
+当前综合使用的 PVT corner：
+宏单元对应的 .db：
+symbol library（如有）：
+使用普通 dc_shell 还是 dc_shell -topo：
 ```
 
-### 4. 标准单元库信息
+普通 DC 如果使用 wire load model，还需确认模型名称、所属 library 和 wire load mode。
 
-请确认：
+Topo 模式还需确认：
 
 ```text
-标准单元库根目录在哪里？
-.db 逻辑库有哪些？
-需要使用哪个工艺角作为 target_library？
-是否有 slow / fast / typical 多角库？
-symbol library 是否存在？
-目标库中的输入 driving cell 名称是什么？
-目标库中的 driving cell 输出 pin 名称是什么？
+Milkyway reference library：
+technology file：
+TLUPlus max/min 文件：
+technology-to-ITF map file：
+Milkyway design library 输出目录：
 ```
 
-### 5. Topographical 可选信息
+### 4. 需要保留的输出
 
-如果使用 `dc_shell -topo`，请确认：
+默认输出：
 
 ```text
-Milkyway reference library 在哪里？
-technology file 在哪里？
-TLUPlus max 文件在哪里？
-TLUPlus min 文件在哪里？
-TLUPlus typ 文件在哪里？
-TLUPlus map file 在哪里？
-Milkyway design library 希望放在哪个目录？
+mapped.v
+mapped.ddc
+mapped.sdc
+timing / area / power / constraint 报告
 ```
 
-如果使用普通 `dc_shell`，请确认：
+只有明确需要时才额外输出 unmapped DDC、SDF、SVF 或其他报告。
 
-```text
-是否需要 wire load model？
-wire load model 名称是什么？
-wire load model 来自哪个 library？
-wire load mode 使用 top / enclosed / segmented 哪一种？
-```
-
-## 二、确认信息后你需要输出什么
-
-等我提供必要信息后，请按下面结构输出。
-
-### 1. 推荐 DC 目录结构
-
-请给出一个清晰的 DC 工程目录结构，例如：
+## 二、推荐目录结构
 
 ```text
 project/
 ├── rtl/
-│   └── <design_name>/
 └── dc/
     ├── scr/
     │   ├── lib_list.tcl
@@ -120,88 +90,186 @@ project/
     │   └── .synopsys_dc.setup
     ├── work/
     ├── alib/
-    ├── mw/
+    ├── mw/                 # 仅 Topo 模式需要
     ├── out/
     └── rep/
 ```
 
-并说明每个目录负责什么：
+各目录职责：
 
 ```text
-rtl/    放可综合 RTL
-scr/    放 DC Tcl 脚本
-syn/    启动 dc_shell 的运行目录
-work/   放 analyze 后的 WORK 设计工作库
-alib/   放 DC 对 .db 库分析后的 ALIB 缓存
-mw/     放 DC topo 使用的 Milkyway design library
-out/    放 mapped.v、mapped.ddc、mapped.sdc、mapped.sdf、svf 等输出
-rep/    放 timing、area、power、constraint 报告
+rtl/    可综合 RTL
+scr/    配置、约束和主流程脚本
+syn/    dc_shell 启动目录
+work/   analyze 产生的 WORK 设计库
+alib/   DC 分析 .db 后产生的 ALIB 缓存
+mw/     Topo 模式的 Milkyway design library
+out/    综合结果
+rep/    综合报告
 ```
 
-### 2. 文件放置建议
+## 三、脚本职责与生成规则
 
-请明确告诉我：
+### 1. lib_list.tcl：描述可用库资源
+
+该文件只回答“库在哪里、有哪些可用资源”，不能决定当前设计使用哪个 PVT corner。
+
+允许定义：
+
+```tcl
+set STD_DB_ROOT  "/path/to/std/db"
+set SRAM_DB_ROOT "/path/to/sram/db"
+```
+
+只有在我提供了完整、可复用的多工艺角库清单时，才可以在这里建立中性的库索引，例如：
+
+```tcl
+set STD_TT_DB [file join $STD_DB_ROOT <tt_library>.db]
+set STD_SS_DB [file join $STD_DB_ROOT <ss_library>.db]
+set STD_FF_DB [file join $STD_DB_ROOT <ff_library>.db]
+```
+
+如果我只提供了当前设计要使用的某个标准单元库或 SRAM 库，不要在 `lib_list.tcl` 中创建带有“当前工程选择”含义的变量；具体文件选择应放入 `common_setup.tcl`。
+
+`lib_list.tcl` 中不得设置 `target_library`、`link_library`，也不得出现设计名、RTL 文件和时序约束。
+
+### 2. common_setup.tcl：描述当前设计
+
+该文件负责选择当前综合对象、RTL、工艺角和宏单元库，例如：
+
+```tcl
+set DESIGN_NAME <top_name>
+
+set RTL_SOURCE_FILES [list \
+    <dependency_1.v> \
+    <top.v> \
+]
+
+set TARGET_LIBRARY_FILES [list \
+    [file join $STD_DB_ROOT <current_corner_stdcell>.db] \
+]
+
+set ADDITIONAL_LINK_LIBRARY_FILES [list \
+    [file join $SRAM_DB_ROOT <current_corner_sram>.db] \
+]
+```
+
+职责边界：
 
 ```text
-RTL 源码放在哪里
-DC 脚本放在哪里
-SDC 放在哪里
-从哪个目录启动 dc_shell
-WORK 工作库放在哪里
-ALIB 缓存放在哪里
-Milkyway design library 放在哪里
-DC 输出文件放在哪里
-DC 报告放在哪里
+lib_list.tcl       提供库目录或完整的可用库索引
+common_setup.tcl   选择当前设计真正使用的 corner、宏库和 RTL
+dc_setup.tcl       把这些选择配置给 DC 内置变量
 ```
 
-### 3. DC 脚本文件
+不要预先生成当前设计不存在的端口变量、库变量和可选功能开关。
 
-请输出以下文件内容：
+### 3. dc_setup.tcl：配置 DC 工具环境
+
+配置 `search_path`、`target_library` 和 `link_library`：
+
+```tcl
+set_app_var search_path [concat $search_path $ADDITIONAL_SEARCH_PATH]
+set_app_var target_library $TARGET_LIBRARY_FILES
+set_app_var link_library [concat "*" \
+    $TARGET_LIBRARY_FILES \
+    $ADDITIONAL_LINK_LIBRARY_FILES]
+```
+
+其中：
 
 ```text
-lib_list.tcl
-common_setup.tcl
-dc_setup.tcl
-sdc.tcl
-dc_run.tcl
-.synopsys_dc.setup
+target_library                 DC 可以用于逻辑映射的标准单元库
+link_library                   解析网表中标准单元、宏单元和已引用设计
+ADDITIONAL_LINK_LIBRARY_FILES  SRAM、ROM、IP 等只需链接而不参与普通逻辑映射的库
 ```
 
-脚本职责应清晰：
+有 symbol library 时再设置 `symbol_library`。需要 DesignWare 时再加入 synthetic library。普通 DC 与 Topo 配置只能根据已确认的运行模式生成一种。
+
+### 4. sdc.tcl：描述设计时序环境
+
+只生成当前设计真实需要的约束，通常包括：
 
 ```text
-lib_list.tcl
-    只定义工艺库路径和库文件变量。
-
-common_setup.tcl
-    定义 DESIGN_NAME、RTL 搜索路径、target library、symbol library、topo 相关变量。
-
-dc_setup.tcl
-    设置 search_path、target_library、link_library、symbol_library。
-    如果使用 topo，设置 Milkyway、technology file、TLUPlus。
-    如果使用普通 DC 且需要 wire load model，设置 wire load model。
-
-sdc.tcl
-    设置时钟、时钟非理想因素、输入输出延迟、复位例外、输入驱动、输出负载等。
-
-dc_run.tcl
-    执行 remove_design、set_svf、analyze、elaborate、link、check_design、source sdc、check_timing、compile、report、write。
-
-.synopsys_dc.setup
-    定义 history、alias、alib 缓存目录、WORK 工作库，并统一 source setup 文件。
+create_clock
+set_clock_uncertainty
+set_clock_transition
+set_clock_latency（有明确预算时）
+set_input_delay / set_output_delay（存在对应数据端口时）
+set_driving_cell / set_load（已知外部电气环境时）
+复位 false path（异步复位且方法合理时）
+时序例外（确有设计依据时）
 ```
 
-脚本中请加适量中文注释，但不要每一行都机械注释。
+必须遵守：
 
-### 4. .synopsys_dc.setup 要求
+```text
+时钟端口不能作为普通数据输入设置 input delay
+异步复位不能作为普通同步数据路径处理
+input delay 与 driving cell 描述的对象不同
+output delay 与 output load 描述的对象不同
+clock source latency 与 network latency 含义不同
+约束对象必须检查是否存在，不能依靠空集合掩盖端口名错误
+```
 
-请包含：
+纯寄存器接口且没有可靠板级预算时，应先说明缺失信息，而不是创建大量值为空的 IO 约束变量。
+
+### 5. dc_run.tcl：执行线性综合流程
+
+主流程保持顺序清晰：
+
+```tcl
+remove_design -all
+analyze -format <verilog_or_sverilog> -library WORK $RTL_SOURCE_FILES
+elaborate $DESIGN_NAME
+current_design $DESIGN_NAME
+link
+check_design
+
+source ../scr/sdc.tcl
+check_timing
+
+compile_ultra
+
+report_constraint -all_violators > ../rep/${DESIGN_NAME}_constraint.rpt
+report_timing                  > ../rep/${DESIGN_NAME}_timing.rpt
+report_area                    > ../rep/${DESIGN_NAME}_area.rpt
+report_power                   > ../rep/${DESIGN_NAME}_power.rpt
+
+write -hierarchy -format ddc \
+    -output ../out/${DESIGN_NAME}.mapped.ddc
+write -hierarchy -format verilog \
+    -output ../out/${DESIGN_NAME}.mapped.v
+write_sdc ../out/${DESIGN_NAME}.mapped.sdc
+```
+
+只有明确要求时才加入：
+
+```text
+set_svf
+unmapped DDC
+write_sdf
+编译前后重复报告
+GTECH/DesignWare 残留检查
+大量 max/min path 报告
+自动删除并重建 WORK
+错误后自动尝试其他配置
+```
+
+不要在 `dc_run.tcl` 中重复 source 已由 `.synopsys_dc.setup` 加载的配置文件。
+
+### 6. .synopsys_dc.setup：统一启动入口
+
+从 `dc/syn/` 启动 `dc_shell`，由该文件完成工作目录初始化和配置加载：
 
 ```tcl
 history keep 200
 
-file mkdir ../alib
 file mkdir ../work
+file mkdir ../alib
+file mkdir ../out
+file mkdir ../rep
+
 set_app_var alib_library_analysis_path ../alib
 define_design_lib WORK -path ../work
 
@@ -210,309 +278,27 @@ source ../scr/common_setup.tcl
 source ../scr/dc_setup.tcl
 ```
 
-请说明：
+只保留真正有用的交互 alias。配置加载只能选择一个入口，不要再让 `dc_run.tcl` 编写相同的 fallback source 逻辑。
+
+## 四、输出时的要求
+
+获得必要信息后，请按以下顺序回答：
+
+1. 给出最终目录结构和文件放置说明。
+2. 输出六个完整脚本。
+3. 简要解释每个脚本的输入、职责和与下一阶段的衔接。
+4. 给出从 `dc/syn/` 启动和执行综合的命令。
+5. 列出预期输出，并说明如何从日志判断流程是否成功。
+
+脚本要求：
 
 ```text
-history keep 200 只影响交互历史
-alias 只是交互快捷命令，不是主流程必需项
-alib_library_analysis_path 用于 .db 库分析缓存
-define_design_lib WORK 用于 analyze 后的设计工作库
+使用适量中文注释，不逐行机械解释
+路径和文件列表使用 Tcl list/file join 等结构化写法
+不硬编码尚未确认的信息
+不生成当前设计用不到的配置
+不同时保留多套互斥实现
+不通过复杂防御代码掩盖配置错误
 ```
 
-### 5. lib_list.tcl 要求
-
-请根据我提供的库路径生成库变量。
-
-至少包含：
-
-```text
-标准单元库根路径
-.db 路径
-slow/fast/typical .db 变量
-symbol library 变量
-如果 topo：Milkyway reference library、tech file、TLUPlus、map file
-```
-
-请说明：
-
-```text
-lib_list.tcl 是库路径索引表
-它只回答“库在哪里、库文件叫什么”
-不要在这里写当前设计名和综合流程
-```
-
-### 6. common_setup.tcl 要求
-
-请生成：
-
-```tcl
-set DESIGN_NAME <top_name>
-set ADDITIONAL_SEARCH_PATH "..."
-set TARGET_LIBRARY_FILES "..."
-set SYMBOL_LIBRARY_FILES "..."
-```
-
-如果是 topo，还要生成：
-
-```tcl
-set MW_DESIGN_LIB ../mw/${DESIGN_NAME}_LIB
-set MW_REFERENCE_LIB_DIRS ...
-set TECH_FILE ...
-set TLUPLUS_MAX_FILE ...
-set TLUPLUS_MIN_FILE ...
-set TLUPLUS_TYP_FILE ...
-set MAP_FILE ...
-```
-
-请说明：
-
-```text
-common_setup.tcl 负责当前工程选择哪些库、RTL 去哪里找、顶层设计叫什么
-它使用 lib_list.tcl 中已经定义好的库变量
-```
-
-### 7. dc_setup.tcl 要求
-
-请生成逻辑库设置：
-
-```tcl
-set search_path "$ADDITIONAL_SEARCH_PATH"
-set target_library "$TARGET_LIBRARY_FILES"
-set link_library "$TARGET_LIBRARY_FILES"
-set symbol_library "$SYMBOL_LIBRARY_FILES"
-```
-
-请说明：
-
-```text
-target_library 是综合映射目标库
-link_library 是解析引用用的库
-symbol_library 主要给图形界面显示符号
-TARGET_LIBRARY_FILES 是普通 Tcl 变量
-target_library 是 DC 内置变量
-```
-
-如果使用 topo，请生成：
-
-```tcl
-set mw_reference_library "$MW_REFERENCE_LIB_DIRS"
-set mw_design_library "$MW_DESIGN_LIB"
-file mkdir [file dirname $mw_design_library]
-
-if {![file isdirectory $mw_design_library]} {
-    create_mw_lib -technology $TECH_FILE \
-                  -mw_reference_library $mw_reference_library \
-                  $mw_design_library
-}
-
-open_mw_lib $mw_design_library
-
-set_tlu_plus_files -max_tluplus $TLUPLUS_MAX_FILE \
-                   -min_tluplus $TLUPLUS_MIN_FILE \
-                   -tech2itf_map $MAP_FILE
-```
-
-请说明：
-
-```text
-create_mw_lib 使用 tech file 和 Milkyway reference library
-TLUPlus 不在 create_mw_lib 时使用
-TLUPlus 是 open_mw_lib 后设置的 RC 模型
-typ TLUPlus 可以保留变量，但基础 max/min 分析通常主要设置 max/min
-```
-
-如果使用普通 DC 且需要 wire load model，请生成：
-
-```tcl
-set_wire_load_model -name <model_name> -library <library_name>
-set_wire_load_mode top
-```
-
-请说明：
-
-```text
-普通 DC 使用 wire load model 估算线延迟
-DC topo 使用 Milkyway + tech file + TLUPlus 估算物理线延迟
-```
-
-### 8. SDC 约束要求
-
-请根据我提供的设计信息生成合适的 `sdc.tcl`。
-
-必须考虑：
-
-```text
-create_clock
-set_clock_latency
-set_clock_uncertainty
-set_clock_transition
-set_input_delay
-set_output_delay
-set_driving_cell
-set_load
-group_path
-reset false path
-```
-
-注意：
-
-```text
-clk 不应作为普通数据输入设置 input delay
-异步 rst/rst_n 不应简单当作普通同步数据路径
-如果复位是异步复位，应考虑 set_false_path -from [get_ports rst/rst_n]
-input delay 和 driving cell 不是同一个概念
-output delay 和 load 不是同一个概念
-set_clock_latency -source 描述时钟源到设计时钟端口前的延迟
-set_clock_latency 描述设计时钟端口到内部寄存器 clock pin 的网络延迟
-clock latency 不应机械套模板，应根据设计阶段、时钟树预算或后端反馈设置
-```
-
-请解释每类约束的目的、影响因素和推荐写法。
-
-如果信息不足，请先问我，不要随便编具体数值。
-
-### 9. dc_run.tcl 要求
-
-请生成 DC 主流程脚本，并包含中文注释。
-
-典型顺序：
-
-```tcl
-remove_design -design
-set_svf ../out/${DESIGN_NAME}.svf
-
-printvar target_library
-printvar link_library
-check_tlu_plus_files  ;# 仅 topo 流程需要
-
-analyze -format verilog -lib work $RTL_SOURCE_FILES
-elaborate $DESIGN_NAME
-link
-check_design
-
-write -hierarchy -format ddc -output ../out/${DESIGN_NAME}_unmap.ddc
-
-source ../scr/sdc.tcl
-check_timing
-
-compile_ultra
-
-report_constraint -significant_digits 4 -all > ../rep/rep_constraints
-report_timing > ../rep/${DESIGN_NAME}_timing
-report_area > ../rep/${DESIGN_NAME}_area
-report_power > ../rep/${DESIGN_NAME}_power
-
-write -hierarchy -format ddc -output ../out/${DESIGN_NAME}.mapped.ddc
-write -hierarchy -format verilog -output ../out/${DESIGN_NAME}.mapped.v
-write_sdc ../out/${DESIGN_NAME}.mapped.sdc
-write_sdf ../out/${DESIGN_NAME}.mapped.sdf
-
-set_svf off
-```
-
-请注意：
-
-```text
-RTL 文件不要硬编码成某一个名字，最好用 RTL_SOURCE_FILES 管理
-如果只有顶层单文件，可用 [list ${DESIGN_NAME}.v]
-如果多文件 RTL，应使用 Tcl list
-不要读取 testbench
-SVF 可以输出到 ../out/
-report_constraint 文件名建议写成 rep_constraints
-```
-
-请解释：
-
-```text
-analyze / elaborate / link / check_design 的区别
-check_timing 和 report_timing 的区别
-compile_ultra 的作用
-report_constraint 和 report_timing 的区别
-mapped 和 unmapped 的区别
--hierarchy 的作用
-```
-
-### 10. DC 输出文件说明
-
-请说明每个输出文件的作用：
-
-```text
-unmap.ddc
-mapped.v
-mapped.ddc
-mapped.sdc
-mapped.sdf
-svf
-timing report
-area report
-power report
-constraint report
-```
-
-并说明：
-
-```text
-mapped 表示已经映射到 target_library 中的标准单元
-unmapped 表示尚未做工艺库标准单元映射
-.ddc 是 DC 内部数据库
-.sdc 是约束文件
-.sdf 是延迟文件
-.svf 服务于 Formality 形式等价验证
-```
-
-### 11. 输出风格要求
-
-请按教学笔记风格输出，不要只给命令。
-
-每一部分都要包含：
-
-```text
-这个文件负责什么
-为什么需要它
-它读入什么
-它输出什么
-它和 DC 主流程如何衔接
-关键命令是什么意思
-```
-
-遇到不确定信息时，不要猜测，请先问我。
-
-## 三、我会提供的信息模板
-
-当你向我提问后，我会尽量按下面格式提供：
-
-```text
-顶层模块名：
-RTL 文件路径：
-RTL 文件列表：
-时钟端口名：
-复位端口名：
-复位有效电平：
-复位同步/异步：
-目标频率：
-是否普通 DC / DC topo：
-是否需要 wire load model：
-wire load model 名称：
-标准单元库根目录：
-slow .db：
-fast .db：
-typ .db：
-target_library 使用哪个 .db：
-symbol library：
-driving cell：
-driving cell 输出 pin：
-输出 load：
-input delay：
-output delay：
-clock uncertainty：
-clock transition：
-clock latency：
-Milkyway reference library：
-technology file：
-TLUPlus max：
-TLUPlus min：
-TLUPlus typ：
-TLUPlus map file：
-```
-
-请根据我提供的信息继续完成 DC 流程适配。
+解释内容与脚本分开。先保证脚本短、直观、可运行，再说明关键命令的作用。
